@@ -10,21 +10,21 @@ local ET = EclipseTunneller
 -- Constants
 -------------------------------------------------------------------------------
 
-local ASTRAL_POWER_TYPE = 8  -- Enum.PowerType.LunarPower / AstralPower
+local ASTRAL_POWER_TYPE = 8
 
--- Eclipse buff IDs (verify on live if Blizzard renumbers in 12.x)
-local AURA_SOLAR   = 164547
-local AURA_LUNAR   = 164812
+-- Eclipse buff IDs
+local AURA_SOLAR = 164547
+local AURA_LUNAR = 164812
 
--- DoT debuff IDs tracked on the current target
+-- DoTs tracked on target
+-- baseDuration: approximate base (un-hasted) seconds; used as fallback
 local DOTS = {
-    { id = 8921,   name = "Moonfire", r = 1.0, g = 0.30, b = 0.00 },
-    { id = 93402,  name = "Sunfire",  r = 1.0, g = 0.90, b = 0.10 },
-    { id = 202347, name = "St.Flare", r = 0.6, g = 0.20, b = 1.00 },
+    { id = 8921,   name = "Moonfire", baseDuration = 24, r = 1.0, g = 0.30, b = 0.00 },
+    { id = 93402,  name = "Sunfire",  baseDuration = 18, r = 1.0, g = 0.90, b = 0.10 },
+    { id = 202347, name = "St.Flare", baseDuration = 24, r = 0.6, g = 0.20, b = 1.00 },
 }
 
--- Cooldown spells shown in the icon row
--- Inactive talents will simply show no CD (C_Spell returns nil for unlearned spells)
+-- CDs shown as Cooldown frames in the icon row
 local CD_SPELLS = {
     { id = 194223 }, -- Celestial Alignment
     { id = 102560 }, -- Incarnation: Chosen of Elune
@@ -32,23 +32,20 @@ local CD_SPELLS = {
     { id = 391528 }, -- Convoke the Spirits
     { id = 202425 }, -- Warrior of Elune
     { id = 88747  }, -- Wild Mushroom
-    { id = 78674  }, -- Starsurge  (track its cooldown if specced)
+    { id = 78674  }, -- Starsurge
     { id = 191034 }, -- Starfall
 }
 
--- Pandemic refresh window = 30% of base duration
 local PANDEMIC_PCT = 0.30
 
--- Suggested-cast priority strings
 local SUGGEST = {
-    MISSING_DOT  = "|cFFFF4444Apply %s!|r",
-    PANDEMIC_DOT = "|cFFFFCC00Refresh %s|r",
-    SPEND_AP     = "|cFFFFD700Spend Astral Power|r",
-    USE_CD       = "|cFF00FFFF%s ready!|r",
-    SOLAR_CAST   = "|cFFFFAA00Cast Wrath|r",
-    LUNAR_CAST   = "|cFF88AAFF Cast Starfire|r",
-    NO_ECLIPSE   = "|cFFAAAAAACast to build Eclipse|r",
-    BOTH         = "|cFFFFFFFFBurn it all!|r",
+    MISSING  = "|cFFFF4444Apply %s!|r",
+    PANDEMIC = "|cFFFFCC00Refresh %s|r",
+    USE_CA   = "|cFF00FFFFUse Celestial Alignment!|r",
+    SOLAR    = "|cFFFFAA00Cast Wrath|r",
+    LUNAR    = "|cFF88AAFFCast Starfire|r",
+    BOTH     = "|cFFFFFFFFBurn everything!|r",
+    NONE     = "|cFFAAAAAACast to build Eclipse|r",
 }
 
 -------------------------------------------------------------------------------
@@ -65,29 +62,29 @@ local DEFAULTS = {
 
 -------------------------------------------------------------------------------
 -- Runtime state
+-- DoT expiry stored as our own computed GetTime() + duration (normal numbers,
+-- never secret API values) so arithmetic is safe.
 -------------------------------------------------------------------------------
 
 local st = {
-    eclipse   = "NONE",   -- "SOLAR" | "LUNAR" | "BOTH" | "NONE"
-    ap        = 0,
-    apMax     = 100,
+    eclipse   = "NONE",
     isBalance = false,
     inCombat  = false,
-    dots      = {},       -- [spellID] = { expiry, duration }
-    cds       = {},       -- [spellID] = { start, duration }
+    dots      = {},  -- [spellID] = { computedExpiry, duration }
+    cdReady   = {},  -- [spellID] = bool (isActive flag, not a secret value)
 }
 
 -------------------------------------------------------------------------------
--- Aura helpers (Midnight C_UnitAuras API)
+-- Aura scanning
 -------------------------------------------------------------------------------
 
 local function ScanBuffs(unit, fn)
     if not C_UnitAuras then return end
     local i = 1
     while true do
-        local data = C_UnitAuras.GetBuffDataByIndex(unit, i)
-        if not data then break end
-        if fn(data) then return true end
+        local d = C_UnitAuras.GetBuffDataByIndex(unit, i)
+        if not d then break end
+        if fn(d) then return end
         i = i + 1
     end
 end
@@ -96,9 +93,9 @@ local function ScanDebuffs(unit, filter, fn)
     if not C_UnitAuras then return end
     local i = 1
     while true do
-        local data = C_UnitAuras.GetDebuffDataByIndex(unit, i, filter)
-        if not data then break end
-        if fn(data) then return true end
+        local d = C_UnitAuras.GetDebuffDataByIndex(unit, i, filter)
+        if not d then break end
+        if fn(d) then return end
         i = i + 1
     end
 end
@@ -115,92 +112,89 @@ local function GetEclipseState()
     else                    return "NONE" end
 end
 
-local function GetDotOnTarget(spellID)
-    local expiry, duration
-    ScanDebuffs("target", "PLAYER", function(d)
-        if d.spellId == spellID then
-            expiry   = d.expirationTime
-            duration = d.duration
-            return true
+-- Scan target's debuffs and update our DoT state using our own computed expiry.
+-- We use GetTime() + aura.duration. If duration is also secret, we fall back to
+-- the hardcoded baseDuration. Either way the result is a normal number.
+local function RefreshDots()
+    local hasTarget = UnitExists("target") and not UnitIsDeadOrGhost("target")
+    local now = GetTime()
+
+    for _, dot in ipairs(DOTS) do
+        if not hasTarget then
+            st.dots[dot.id] = nil
+        else
+            local found = false
+            ScanDebuffs("target", "PLAYER", function(d)
+                if d.spellId == dot.id then
+                    found = true
+                    -- d.duration may or may not be secret; pcall to be safe.
+                    -- If it fails we use baseDuration.
+                    local dur = dot.baseDuration
+                    pcall(function() dur = d.duration end)
+                    if not dur or dur <= 0 then dur = dot.baseDuration end
+                    st.dots[dot.id] = {
+                        computedExpiry = now + dur,
+                        duration       = dur,
+                    }
+                    return true
+                end
+            end)
+            if not found then
+                st.dots[dot.id] = nil
+            end
         end
-    end)
-    return expiry, duration
-end
-
-local function IsPandemic(expiry, baseDuration)
-    if not expiry or expiry == 0 then return false end
-    return (expiry - GetTime()) <= (baseDuration * PANDEMIC_PCT)
-end
-
-local function GetCDRemaining(spellID)
-    if not C_Spell then return nil end
-    local data = C_Spell.GetSpellCooldown(spellID)
-    if data and data.duration and data.duration > 1.5 then
-        local remaining = (data.startTime + data.duration) - GetTime()
-        return remaining > 0 and remaining or nil
     end
-    return nil
 end
 
 -------------------------------------------------------------------------------
--- Suggestion engine
+-- Suggestion engine (only uses our own computed normal-number dot state)
 -------------------------------------------------------------------------------
 
 local function GetSuggestion()
-    -- 1. Missing DoTs (highest urgency)
-    for _, dot in ipairs(DOTS) do
-        if dot.id ~= 202347 or EclipseTunnellerDB.showStellarFlare then
-            local expiry = st.dots[dot.id] and st.dots[dot.id].expiry or 0
-            if expiry == 0 or (expiry - GetTime()) <= 0 then
-                return string.format(SUGGEST.MISSING_DOT, dot.name)
-            end
-        end
-    end
-    -- 2. Major CD ready
-    local caCD = GetCDRemaining(194223) or GetCDRemaining(102560)
-    if not caCD and st.ap >= 50 then
-        return string.format(SUGGEST.USE_CD, "Celestial Alignment")
-    end
-    -- 3. Pandemic refresh needed
+    local now = GetTime()
+
+    -- Missing DoTs (highest priority)
     for _, dot in ipairs(DOTS) do
         if dot.id ~= 202347 or EclipseTunnellerDB.showStellarFlare then
             local d = st.dots[dot.id]
-            if d and d.expiry > 0 and IsPandemic(d.expiry, d.duration or 16) then
-                return string.format(SUGGEST.PANDEMIC_DOT, dot.name)
+            if not d or (d.computedExpiry - now) <= 0 then
+                return string.format(SUGGEST.MISSING, dot.name)
             end
         end
     end
-    -- 4. Spend Astral Power
-    if st.ap >= 90 then return SUGGEST.SPEND_AP end
-    -- 5. Eclipse casts
+
+    -- CA ready
+    if not st.cdReady[194223] and not st.cdReady[102560] then
+        return SUGGEST.USE_CA
+    end
+
+    -- Pandemic refresh
+    for _, dot in ipairs(DOTS) do
+        if dot.id ~= 202347 or EclipseTunnellerDB.showStellarFlare then
+            local d = st.dots[dot.id]
+            if d and d.computedExpiry > 0 then
+                local remaining = d.computedExpiry - now  -- normal - normal = safe
+                if remaining <= (d.duration * PANDEMIC_PCT) then
+                    return string.format(SUGGEST.PANDEMIC, dot.name)
+                end
+            end
+        end
+    end
+
+    -- Eclipse cast
     if     st.eclipse == "BOTH"  then return SUGGEST.BOTH
-    elseif st.eclipse == "SOLAR" then return SUGGEST.SOLAR_CAST
-    elseif st.eclipse == "LUNAR" then return SUGGEST.LUNAR_CAST
-    else                              return SUGGEST.NO_ECLIPSE end
+    elseif st.eclipse == "SOLAR" then return SUGGEST.SOLAR
+    elseif st.eclipse == "LUNAR" then return SUGGEST.LUNAR
+    else                              return SUGGEST.NONE end
 end
 
 -------------------------------------------------------------------------------
 -- UI construction
 -------------------------------------------------------------------------------
 
-local FRAME_W = 230
-local FRAME_H = 148
-
-local function MakeBar(parent, w, h)
-    local bg = CreateFrame("Frame", nil, parent)
-    bg:SetSize(w, h)
-    local bgTex = bg:CreateTexture(nil, "BACKGROUND")
-    bgTex:SetAllPoints()
-    bgTex:SetColorTexture(0.12, 0.12, 0.12, 1)
-    local fill = bg:CreateTexture(nil, "ARTWORK")
-    fill:SetPoint("LEFT", bg, "LEFT", 0, 0)
-    fill:SetHeight(h)
-    fill:SetWidth(1)
-    local label = bg:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    label:SetAllPoints()
-    label:SetJustifyH("CENTER")
-    return bg, fill, label
-end
+local FRAME_W  = 230
+local FRAME_H  = 152
+local BAR_W    = FRAME_W - 16
 
 local function BuildUI()
     local db = EclipseTunnellerDB
@@ -218,9 +212,8 @@ local function BuildUI()
         edgeSize = 8,
         insets   = { left=3, right=3, top=3, bottom=3 },
     })
-    f:SetBackdropColor(0.05, 0.05, 0.1, 0.88)
+    f:SetBackdropColor(0.05, 0.05, 0.10, 0.88)
     f:SetBackdropBorderColor(0.4, 0.3, 0.6, 0.9)
-
     f:SetScript("OnMouseDown", function(self, btn)
         if btn == "LeftButton" and not db.locked then self:StartMoving() end
     end)
@@ -230,65 +223,97 @@ local function BuildUI()
         db.x, db.y = x, y
     end)
 
-    -- ── Eclipse state label ──────────────────────────────────────────────────
+    -- Eclipse label
     local eclipseLabel = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     eclipseLabel:SetPoint("TOP", f, "TOP", 0, -8)
     eclipseLabel:SetText("NO ECLIPSE")
-    eclipseLabel:SetTextColor(0.5, 0.5, 0.5, 1)
     f.eclipseLabel = eclipseLabel
 
-    -- ── Suggestion text ──────────────────────────────────────────────────────
+    -- Suggestion text
     local suggest = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    suggest:SetPoint("TOP", eclipseLabel, "BOTTOM", 0, -2)
+    suggest:SetPoint("TOP", eclipseLabel, "BOTTOM", 0, -1)
     suggest:SetText("")
     f.suggest = suggest
 
-    -- ── Astral Power bar ─────────────────────────────────────────────────────
-    local apBg, apFill, apText = MakeBar(f, FRAME_W - 16, 14)
+    -- Astral Power StatusBar (accepts secret values without arithmetic)
+    local apBg = CreateFrame("Frame", nil, f)
+    apBg:SetSize(BAR_W, 14)
     apBg:SetPoint("TOP", suggest, "BOTTOM", 0, -3)
-    apFill:SetColorTexture(0.55, 0.3, 1.0, 1)
-    apText:SetTextColor(1, 1, 1, 1)
-    f.apBg = apBg; f.apFill = apFill; f.apText = apText
+    local apBgTex = apBg:CreateTexture(nil, "BACKGROUND")
+    apBgTex:SetAllPoints()
+    apBgTex:SetColorTexture(0.12, 0.12, 0.12, 1)
 
-    -- ── DoT bars ─────────────────────────────────────────────────────────────
+    local apBar = CreateFrame("StatusBar", nil, apBg)
+    apBar:SetAllPoints()
+    apBar:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
+    apBar:SetStatusBarColor(0.55, 0.30, 1.0, 1)
+    apBar:SetMinMaxValues(0, 100)
+    apBar:SetValue(0)
+
+    local apLabel = apBg:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    apLabel:SetAllPoints()
+    apLabel:SetJustifyH("CENTER")
+    apLabel:SetText("Astral Power")
+    apLabel:SetTextColor(0.85, 0.85, 0.85, 1)
+
+    f.apBar   = apBar
+    f.apBg    = apBg
+    f.apLabel = apLabel
+
+    -- DoT StatusBars
     f.dotRows = {}
     for i, dot in ipairs(DOTS) do
-        local bg, fill, label = MakeBar(f, FRAME_W - 16, 15)
-        bg:SetPoint("TOP", (i == 1) and apBg or f.dotRows[i-1].bg, "BOTTOM", 0, -3)
-        fill:SetColorTexture(dot.r, dot.g, dot.b, 1)
+        local anchor = (i == 1) and apBg or f.dotRows[i-1].bg
+
+        local bg = CreateFrame("Frame", nil, f)
+        bg:SetSize(BAR_W, 15)
+        bg:SetPoint("TOP", anchor, "BOTTOM", 0, -3)
+        local bgTex = bg:CreateTexture(nil, "BACKGROUND")
+        bgTex:SetAllPoints()
+        bgTex:SetColorTexture(0.10, 0.10, 0.10, 1)
+
+        local bar = CreateFrame("StatusBar", nil, bg)
+        bar:SetAllPoints()
+        bar:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
+        bar:SetStatusBarColor(dot.r, dot.g, dot.b, 1)
+        bar:SetMinMaxValues(0, dot.baseDuration)
+        bar:SetValue(0)
+
+        local label = bg:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        label:SetAllPoints()
+        label:SetJustifyH("CENTER")
         label:SetText(dot.name)
-        f.dotRows[i] = { bg=bg, fill=fill, label=label }
+
+        f.dotRows[i] = { bg = bg, bar = bar, label = label }
         bg:SetShown(i < 3 or db.showStellarFlare)
     end
 
-    -- ── Cooldown icon row ─────────────────────────────────────────────────────
+    -- Cooldown icon row
     local cdRow = CreateFrame("Frame", nil, f)
-    cdRow:SetSize(FRAME_W - 16, 24)
+    cdRow:SetSize(BAR_W, 24)
     cdRow:SetPoint("BOTTOM", f, "BOTTOM", 0, 5)
     f.cdIcons = {}
 
     for i, cd in ipairs(CD_SPELLS) do
         local btn = CreateFrame("Frame", nil, cdRow)
         btn:SetSize(22, 22)
-        btn:SetPoint("LEFT", cdRow, "LEFT", (i - 1) * 24, 0)
+        btn:SetPoint("LEFT", cdRow, "LEFT", (i-1)*24, 0)
 
         local tex = btn:CreateTexture(nil, "ARTWORK")
         tex:SetAllPoints()
-        local iconID = C_Spell.GetSpellTexture(cd.id)
-        tex:SetTexture(iconID)
         tex:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+        local iconID = C_Spell.GetSpellTexture(cd.id)
+        if iconID then tex:SetTexture(iconID) end
 
-        local dim = btn:CreateTexture(nil, "OVERLAY")
-        dim:SetAllPoints()
-        dim:SetColorTexture(0, 0, 0, 0.65)
-        dim:Hide()
+        -- Cooldown frame — Blizzard's frame handles secret values internally
+        local cdf = CreateFrame("Cooldown", nil, btn, "CooldownFrameTemplate")
+        cdf:SetAllPoints()
+        cdf:SetDrawEdge(false)
+        cdf:SetDrawSwipe(true)
+        cdf:SetReverse(false)
 
-        local cdt = btn:CreateFontString(nil, "OVERLAY", "NumberFontNormal")
-        cdt:SetAllPoints()
-        cdt:SetJustifyH("CENTER")
-        cdt:SetText("")
-
-        btn.tex = tex; btn.dim = dim; btn.cdt = cdt
+        btn.tex = tex
+        btn.cdf = cdf
         f.cdIcons[cd.id] = btn
     end
 
@@ -296,71 +321,68 @@ local function BuildUI()
 end
 
 -------------------------------------------------------------------------------
--- Per-element update functions
+-- Update functions
 -------------------------------------------------------------------------------
 
 local ECLIPSE_TEXT  = { SOLAR="SOLAR ECLIPSE", LUNAR="LUNAR ECLIPSE", BOTH="CELESTIAL", NONE="NO ECLIPSE" }
 local ECLIPSE_COLOR = {
-    SOLAR = {1.0, 0.78, 0.0},
-    LUNAR = {0.45, 0.65, 1.0},
-    BOTH  = {1.0, 1.0, 1.0},
+    SOLAR = {1.0, 0.78, 0.00},
+    LUNAR = {0.45, 0.65, 1.00},
+    BOTH  = {1.0,  1.0,  1.00},
     NONE  = {0.45, 0.45, 0.45},
 }
 
 local function UpdateEclipse()
-    local f = ET.frame
     local e = st.eclipse
-    f.eclipseLabel:SetText(ECLIPSE_TEXT[e])
-    local c = ECLIPSE_COLOR[e]
-    f.eclipseLabel:SetTextColor(c[1], c[2], c[3], 1)
+    ET.frame.eclipseLabel:SetText(ECLIPSE_TEXT[e] or "NO ECLIPSE")
+    local c = ECLIPSE_COLOR[e] or ECLIPSE_COLOR.NONE
+    ET.frame.eclipseLabel:SetTextColor(c[1], c[2], c[3], 1)
 end
 
 local function UpdateAP()
     local f = ET.frame
-    local db = EclipseTunnellerDB
-    local pct = st.apMax > 0 and (st.ap / st.apMax) or 0
-    local w = math.max(1, (FRAME_W - 16) * pct)
-    f.apFill:SetWidth(w)
-    f.apText:SetText("Astral Power  " .. st.ap .. " / " .. st.apMax)
-    if st.ap >= 90 then
-        f.apFill:SetColorTexture(1.0, 0.85, 0.0, 1)
-        f.apText:SetTextColor(1.0, 0.95, 0.5, 1)
-    else
-        f.apFill:SetColorTexture(0.55, 0.3, 1.0, 1)
-        f.apText:SetTextColor(0.9, 0.9, 0.9, 1)
-    end
+    local maxAP = UnitPowerMax("player", ASTRAL_POWER_TYPE) or 100
+    f.apBar:SetMinMaxValues(0, maxAP)
+    -- SetValue accepts secret values — no arithmetic needed
+    f.apBar:SetValue(UnitPower("player", ASTRAL_POWER_TYPE))
 end
 
 local function UpdateDots()
-    local f = ET.frame
+    local f   = ET.frame
     local now = GetTime()
-    local barW = FRAME_W - 16
-
     for i, dot in ipairs(DOTS) do
         local row = f.dotRows[i]
         if row.bg:IsShown() then
             local d = st.dots[dot.id]
-            local expiry   = d and d.expiry   or 0
-            local duration = d and d.duration or 16
-
-            if expiry == 0 or (expiry - now) <= 0 then
-                row.fill:SetWidth(1)
+            if not d then
+                -- Not on target
+                row.bar:SetMinMaxValues(0, dot.baseDuration)
+                row.bar:SetValue(0)
                 row.label:SetText(dot.name .. "  MISSING")
-                row.label:SetTextColor(1, 0.2, 0.2, 1)
-                row.fill:SetColorTexture(0.6, 0.1, 0.1, 1)
+                row.label:SetTextColor(1, 0.25, 0.25, 1)
+                row.bar:SetStatusBarColor(0.55, 0.10, 0.10, 1)
             else
-                local remaining = expiry - now
-                local pct = math.min(remaining / duration, 1)
-                row.fill:SetWidth(math.max(1, barW * pct))
-                local pandemic = IsPandemic(expiry, duration)
-                if pandemic then
-                    row.fill:SetColorTexture(1.0, 0.75, 0.0, 1)
-                    row.label:SetTextColor(1.0, 0.85, 0.0, 1)
+                -- computedExpiry and duration are our own normal numbers
+                local remaining = d.computedExpiry - now  -- safe: normal - normal
+                if remaining <= 0 then
+                    row.bar:SetMinMaxValues(0, d.duration)
+                    row.bar:SetValue(0)
+                    row.label:SetText(dot.name .. "  EXPIRED")
+                    row.label:SetTextColor(1, 0.25, 0.25, 1)
+                    row.bar:SetStatusBarColor(0.55, 0.10, 0.10, 1)
                 else
-                    row.fill:SetColorTexture(dot.r, dot.g, dot.b, 1)
-                    row.label:SetTextColor(0.9, 0.9, 0.9, 1)
+                    row.bar:SetMinMaxValues(0, d.duration)
+                    row.bar:SetValue(remaining)
+                    local pandemic = remaining <= (d.duration * PANDEMIC_PCT)
+                    if pandemic then
+                        row.bar:SetStatusBarColor(1.0, 0.75, 0.0, 1)
+                        row.label:SetTextColor(1.0, 0.85, 0.0, 1)
+                    else
+                        row.bar:SetStatusBarColor(dot.r, dot.g, dot.b, 1)
+                        row.label:SetTextColor(0.9, 0.9, 0.9, 1)
+                    end
+                    row.label:SetText(dot.name .. "  " .. string.format("%.1fs", remaining))
                 end
-                row.label:SetText(dot.name .. "  " .. string.format("%.1fs", remaining))
             end
         end
     end
@@ -371,24 +393,22 @@ local function UpdateCDs()
     for _, cd in ipairs(CD_SPELLS) do
         local icon = f.cdIcons[cd.id]
         if icon then
-            local remaining = GetCDRemaining(cd.id)
-            if remaining then
-                icon.dim:Show()
+            local data = C_Spell.GetSpellCooldown(cd.id)
+            if data and data.isActive then
                 icon.tex:SetDesaturated(true)
-                icon.cdt:SetText(remaining >= 60
-                    and string.format("%dm", math.ceil(remaining / 60))
-                    or  string.format("%d", math.ceil(remaining)))
+                -- SetCooldown accepts secret values; use pcall anonymous closure
+                pcall(function() icon.cdf:SetCooldown(data.startTime, data.duration) end)
+                st.cdReady[cd.id] = false
             else
-                icon.dim:Hide()
                 icon.tex:SetDesaturated(false)
-                icon.cdt:SetText("")
+                icon.cdf:Clear()
+                st.cdReady[cd.id] = true
             end
         end
     end
 end
 
 local function UpdateSuggest()
-    if not ET.frame then return end
     ET.frame.suggest:SetText(st.inCombat and GetSuggestion() or "")
 end
 
@@ -398,38 +418,19 @@ end
 
 local function FullUpdate()
     if not ET.frame then return end
-
-    -- Eclipse
     st.eclipse = GetEclipseState()
-
-    -- Astral Power
-    st.ap    = UnitPower("player",    ASTRAL_POWER_TYPE)
-    st.apMax = UnitPowerMax("player", ASTRAL_POWER_TYPE)
-
-    -- DoTs
-    local hasTarget = UnitExists("target") and not UnitIsDeadOrGhost("target")
-    for _, dot in ipairs(DOTS) do
-        if hasTarget then
-            local expiry, duration = GetDotOnTarget(dot.id)
-            st.dots[dot.id] = { expiry = expiry or 0, duration = duration or 16 }
-        else
-            st.dots[dot.id] = { expiry = 0, duration = 16 }
-        end
-    end
-
+    RefreshDots()
     UpdateEclipse()
     UpdateAP()
     UpdateDots()
     UpdateCDs()
     UpdateSuggest()
-
-    -- Show/hide
     local db = EclipseTunnellerDB
     ET.frame:SetShown(st.isBalance and (st.inCombat or db.showOutOfCombat))
 end
 
 -------------------------------------------------------------------------------
--- Ticker
+-- Ticker (0.1s for smooth bar updates)
 -------------------------------------------------------------------------------
 
 local ticker
@@ -444,28 +445,28 @@ local function StopTicker()
 end
 
 -------------------------------------------------------------------------------
--- Event handling
+-- Events
 -------------------------------------------------------------------------------
 
 local function CheckSpec()
     local _, classFile = UnitClass("player")
-    local specIndex = GetSpecialization()
-    st.isBalance = (classFile == "DRUID") and (specIndex == 1)
+    local idx = GetSpecialization()
+    st.isBalance = (classFile == "DRUID") and (idx == 1)
 end
 
-local events = CreateFrame("Frame")
-events:RegisterEvent("ADDON_LOADED")
-events:RegisterEvent("PLAYER_LOGIN")
-events:RegisterEvent("PLAYER_ENTERING_WORLD")
-events:RegisterEvent("PLAYER_REGEN_DISABLED")
-events:RegisterEvent("PLAYER_REGEN_ENABLED")
-events:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
-events:RegisterEvent("ACTIVE_TALENT_GROUP_CHANGED")
-events:RegisterEvent("UNIT_AURA")
-events:RegisterEvent("UNIT_POWER_UPDATE")
-events:RegisterEvent("UNIT_TARGET")
+local ev = CreateFrame("Frame")
+ev:RegisterEvent("ADDON_LOADED")
+ev:RegisterEvent("PLAYER_LOGIN")
+ev:RegisterEvent("PLAYER_ENTERING_WORLD")
+ev:RegisterEvent("PLAYER_REGEN_DISABLED")
+ev:RegisterEvent("PLAYER_REGEN_ENABLED")
+ev:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
+ev:RegisterEvent("ACTIVE_TALENT_GROUP_CHANGED")
+ev:RegisterEvent("UNIT_AURA")
+ev:RegisterEvent("UNIT_POWER_UPDATE")
+ev:RegisterEvent("UNIT_TARGET")
 
-events:SetScript("OnEvent", function(_, event, arg1)
+ev:SetScript("OnEvent", function(_, event, arg1)
     if event == "ADDON_LOADED" and arg1 == ADDON then
         if not EclipseTunnellerDB then
             EclipseTunnellerDB = CopyTable(DEFAULTS)
@@ -494,17 +495,21 @@ events:SetScript("OnEvent", function(_, event, arg1)
         if st.isBalance then StartTicker() else StopTicker() end
         FullUpdate()
 
-    elseif event == "UNIT_AURA" and arg1 == "player" then
-        st.eclipse = GetEclipseState()
-        if ET.frame then UpdateEclipse(); UpdateSuggest() end
+    elseif event == "UNIT_AURA" then
+        if arg1 == "player" then
+            st.eclipse = GetEclipseState()
+            if ET.frame then UpdateEclipse(); UpdateSuggest() end
+        elseif arg1 == "target" then
+            RefreshDots()
+            if ET.frame then UpdateDots(); UpdateSuggest() end
+        end
 
     elseif event == "UNIT_POWER_UPDATE" and arg1 == "player" then
-        st.ap    = UnitPower("player", ASTRAL_POWER_TYPE)
-        st.apMax = UnitPowerMax("player", ASTRAL_POWER_TYPE)
-        if ET.frame then UpdateAP(); UpdateSuggest() end
+        if ET.frame then UpdateAP() end
 
     elseif event == "UNIT_TARGET" and arg1 == "player" then
-        FullUpdate()
+        RefreshDots()
+        if ET.frame then UpdateDots(); UpdateSuggest() end
     end
 end)
 
@@ -542,11 +547,11 @@ SlashCmdList["ET"] = function(msg)
         print("|cFF54a3ffEclipseTunneller:|r Position reset.")
     else
         print("|cFF54a3ffEclipseTunneller|r — Balance Druid Eclipse HUD")
-        print("  /et            toggle visibility")
-        print("  /et lock       lock frame")
-        print("  /et unlock     unlock frame (drag to move)")
-        print("  /et combat     toggle out-of-combat display")
-        print("  /et stellar    toggle Stellar Flare DoT row")
-        print("  /et reset      reset frame position")
+        print("  /et          toggle visibility")
+        print("  /et lock     lock frame position")
+        print("  /et unlock   unlock frame (drag to move)")
+        print("  /et combat   toggle out-of-combat display")
+        print("  /et stellar  toggle Stellar Flare DoT row")
+        print("  /et reset    reset frame position")
     end
 end
