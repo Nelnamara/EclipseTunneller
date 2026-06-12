@@ -1,0 +1,6 @@
+package-as: EclipseTunneller
+ignore:
+  - .pkgmeta
+  - .gitignore
+  - .github
+  - README.md
