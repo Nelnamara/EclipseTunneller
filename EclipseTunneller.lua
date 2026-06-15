@@ -520,7 +520,17 @@ end)
 SLASH_ET1 = "/et"
 SlashCmdList["ET"] = function(msg)
     msg = strtrim(msg):lower()
-    if msg == "lock" then
+    if msg == "" then
+        -- Toggle: flip showOutOfCombat and force a full update so the frame
+        -- appears immediately without needing to enter combat.
+        EclipseTunnellerDB.showOutOfCombat = not EclipseTunnellerDB.showOutOfCombat
+        if EclipseTunnellerDB.showOutOfCombat and st.isBalance then
+            StartTicker()
+        end
+        FullUpdate()
+        local state = EclipseTunnellerDB.showOutOfCombat and "shown" or "hidden (combat only)"
+        print("|cFF54a3ffEclipseTunneller:|r " .. state)
+    elseif msg == "lock" then
         EclipseTunnellerDB.locked = true
         print("|cFF54a3ffEclipseTunneller:|r Locked.")
     elseif msg == "unlock" then
@@ -528,6 +538,9 @@ SlashCmdList["ET"] = function(msg)
         print("|cFF54a3ffEclipseTunneller:|r Unlocked — drag to reposition.")
     elseif msg == "combat" then
         EclipseTunnellerDB.showOutOfCombat = not EclipseTunnellerDB.showOutOfCombat
+        if EclipseTunnellerDB.showOutOfCombat and st.isBalance then
+            StartTicker()
+        end
         print("|cFF54a3ffEclipseTunneller:|r Show out of combat: "
             .. tostring(EclipseTunnellerDB.showOutOfCombat))
         FullUpdate()
@@ -545,13 +558,25 @@ SlashCmdList["ET"] = function(msg)
             ET.frame:SetPoint("CENTER", UIParent, "CENTER", 0, -180)
         end
         print("|cFF54a3ffEclipseTunneller:|r Position reset.")
+    elseif msg == "debug" then
+        local _, cls = UnitClass("player")
+        local spec = GetSpecialization()
+        print("|cFF54a3ffEclipseTunneller DEBUG:|r")
+        print("  class=" .. tostring(cls) .. "  spec=" .. tostring(spec))
+        print("  isBalance=" .. tostring(st.isBalance))
+        print("  inCombat=" .. tostring(st.inCombat))
+        print("  eclipse=" .. tostring(st.eclipse))
+        print("  frame=" .. tostring(ET.frame ~= nil))
+        print("  showOutOfCombat=" .. tostring(EclipseTunnellerDB.showOutOfCombat))
+        print("  ticker=" .. tostring(ticker ~= nil))
     else
         print("|cFF54a3ffEclipseTunneller|r — Balance Druid Eclipse HUD")
-        print("  /et          toggle visibility")
+        print("  /et          toggle (show/hide out of combat)")
         print("  /et lock     lock frame position")
         print("  /et unlock   unlock frame (drag to move)")
-        print("  /et combat   toggle out-of-combat display")
+        print("  /et combat   same as /et toggle")
         print("  /et stellar  toggle Stellar Flare DoT row")
         print("  /et reset    reset frame position")
+        print("  /et debug    print current state to chat")
     end
 end
