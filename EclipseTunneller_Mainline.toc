@@ -4,8 +4,7 @@
 ## Author: Nelnamara
 ## Version: 1.0.0
 ## SavedVariables: EclipseTunnellerDB
-## X-Curse-Project-ID:
-## X-Wago-ID:
+## X-Curse-Project-ID: 1577103
 ## X-Website: https://github.com/Nelnamara/EclipseTunneller
 ## X-License: All Rights Reserved
 
