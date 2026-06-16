@@ -101,11 +101,11 @@ local function ScanDebuffs(unit, filter, fn)
 end
 
 local function GetEclipseState()
-    local solar, lunar = false, false
-    ScanBuffs("player", function(d)
-        if d.spellId == AURA_SOLAR then solar = true end
-        if d.spellId == AURA_LUNAR then lunar = true end
-    end)
+    -- C_UnitAuras.GetPlayerAuraBySpellID does the spellID match internally
+    -- and returns nil/non-nil without exposing the secret spellId field for
+    -- us to compare directly (direct comparison taints and errors).
+    local solar = C_UnitAuras.GetPlayerAuraBySpellID(AURA_SOLAR) ~= nil
+    local lunar = C_UnitAuras.GetPlayerAuraBySpellID(AURA_LUNAR) ~= nil
     if solar and lunar then return "BOTH"
     elseif solar       then return "SOLAR"
     elseif lunar       then return "LUNAR"
@@ -123,23 +123,19 @@ local function RefreshDots()
         if not hasTarget then
             st.dots[dot.id] = nil
         else
-            local found = false
-            ScanDebuffs("target", "PLAYER", function(d)
-                if d.spellId == dot.id then
-                    found = true
-                    -- d.duration may or may not be secret; pcall to be safe.
-                    -- If it fails we use baseDuration.
-                    local dur = dot.baseDuration
-                    pcall(function() dur = d.duration end)
-                    if not dur or dur <= 0 then dur = dot.baseDuration end
-                    st.dots[dot.id] = {
-                        computedExpiry = now + dur,
-                        duration       = dur,
-                    }
-                    return true
-                end
-            end)
-            if not found then
+            -- Use the spellID-targeted lookup instead of scanning + comparing
+            -- d.spellId ourselves — direct comparison against a secret field
+            -- taints execution and errors. This API matches internally.
+            local d = C_UnitAuras.GetAuraDataBySpellID("target", dot.id, "PLAYER")
+            if d then
+                local dur = dot.baseDuration
+                pcall(function() dur = d.duration end)
+                if not dur or dur <= 0 then dur = dot.baseDuration end
+                st.dots[dot.id] = {
+                    computedExpiry = now + dur,
+                    duration       = dur,
+                }
+            else
                 st.dots[dot.id] = nil
             end
         end
