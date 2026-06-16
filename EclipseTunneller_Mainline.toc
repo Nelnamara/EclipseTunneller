@@ -1,6 +1,6 @@
-## Interface: 120007
+﻿## Interface: 120005
 ## Title: |cFF54a3ffEclipseTunneller|r
-## Notes: Balance Druid Eclipse HUD — tracks Eclipse state, DoT timers, and cast windows.
+## Notes: Balance Druid Eclipse HUD - tracks Eclipse state, DoT timers, and cast windows.
 ## Author: Nelnamara
 ## Version: 1.0.0
 ## SavedVariables: EclipseTunnellerDB
