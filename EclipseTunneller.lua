@@ -123,10 +123,10 @@ local function RefreshDots()
         if not hasTarget then
             st.dots[dot.id] = nil
         else
-            -- Use the spellID-targeted lookup instead of scanning + comparing
-            -- d.spellId ourselves — direct comparison against a secret field
-            -- taints execution and errors. This API matches internally.
-            local d = C_UnitAuras.GetAuraDataBySpellID("target", dot.id, "PLAYER")
+            -- AuraUtil.FindAuraByName matches by name internally and never
+            -- hands us the secret spellId field to compare ourselves —
+            -- comparing d.spellId directly taints execution and errors.
+            local d = AuraUtil.FindAuraByName(dot.name, "target", "PLAYER")
             if d then
                 local dur = dot.baseDuration
                 pcall(function() dur = d.duration end)
