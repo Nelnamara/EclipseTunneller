@@ -159,8 +159,8 @@ local function GetSuggestion()
         end
     end
 
-    -- CA ready
-    if not st.cdReady[194223] and not st.cdReady[102560] then
+    -- CA ready — suggest it when either CA or Incarnation is off cooldown
+    if st.cdReady[194223] or st.cdReady[102560] then
         return SUGGEST.USE_CA
     end
 
