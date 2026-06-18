@@ -474,7 +474,7 @@ local function BuildMinimapButton()
     if ET.minimapBtn then return end
     local db = EclipseTunnellerDB
     local btn = CreateFrame("Button", "EclipseTunnellerMinimapButton", Minimap)
-    btn:SetSize(32, 32)
+    btn:SetSize(24, 24)
     btn:SetFrameStrata("MEDIUM")
     btn:SetFrameLevel(8)
     btn:EnableMouse(true)
