@@ -12,9 +12,14 @@ local ET = EclipseTunneller
 
 local ASTRAL_POWER_TYPE = 8
 
--- Eclipse buff IDs
-local AURA_SOLAR = 164547
-local AURA_LUNAR = 164812
+-- Eclipse buff IDs — the self-buff AURAS applied while in Eclipse (15s state),
+-- not the active ability you press. Confirmed current on 12.0.7 (Wowhead Live):
+--   48517 Eclipse (Solar) — +dmg incl. Wrath; 48518 Eclipse (Lunar) — +dmg incl. Starfire.
+-- (Was 164547/164812 — 164547 no longer exists and 164812 is *Moonfire*, so the
+--  HUD was reading Moonfire as "Lunar Eclipse" and never detecting Solar. Verify
+--  in-game: enter each Eclipse, /dump C_UnitAuras.GetPlayerAuraBySpellID(48517/48518).)
+local AURA_SOLAR = 48517
+local AURA_LUNAR = 48518
 
 -- DoTs tracked on target
 -- baseDuration: approximate base (un-hasted) seconds; used as fallback
