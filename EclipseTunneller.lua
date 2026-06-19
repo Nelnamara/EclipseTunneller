@@ -119,33 +119,34 @@ local function GetEclipseState()
     else                    return "NONE" end
 end
 
--- Scan target's debuffs and update our DoT state using our own computed expiry.
--- We use GetTime() + aura.duration. If duration is also secret, we fall back to
--- the hardcoded baseDuration. Either way the result is a normal number.
-local function RefreshDots()
-    local hasTarget = UnitExists("target") and not UnitIsDeadOrGhost("target")
-    local now = GetTime()
+-- DoT tracking is event-driven on Midnight. Target-debuff scanning is blocked:
+-- AuraUtil.FindAuraByName's underlying GetAuraDataBySpellName was removed in 12.0.7
+-- (caused a 166x "call a nil value" crash), and aura.spellId/.name are secret so we
+-- can't match them ourselves. Instead we record an expiry whenever the PLAYER casts
+-- a DoT (UNIT_SPELLCAST_SUCCEEDED — spellID is non-secret for the "player" unit) and
+-- clear on target change. baseDuration is approximate (no haste) but always a normal
+-- number, never a secret API value.
+local DOT_BY_ID = {}
+for _, dot in ipairs(DOTS) do DOT_BY_ID[dot.id] = dot end
 
-    for _, dot in ipairs(DOTS) do
-        if not hasTarget then
-            st.dots[dot.id] = nil
-        else
-            -- AuraUtil.FindAuraByName matches by name internally and never
-            -- hands us the secret spellId field to compare ourselves —
-            -- comparing d.spellId directly taints execution and errors.
-            local d = AuraUtil.FindAuraByName(dot.name, "target", "PLAYER")
-            if d then
-                local dur = dot.baseDuration
-                pcall(function() dur = d.duration end)
-                if not dur or dur <= 0 then dur = dot.baseDuration end
-                st.dots[dot.id] = {
-                    computedExpiry = now + dur,
-                    duration       = dur,
-                }
-            else
-                st.dots[dot.id] = nil
-            end
-        end
+local function ClearDots()
+    for id in pairs(st.dots) do st.dots[id] = nil end
+end
+
+local function RecordDotCast(spellID)
+    local dot = DOT_BY_ID[spellID]
+    if not dot then return end
+    st.dots[dot.id] = {
+        computedExpiry = GetTime() + dot.baseDuration,
+        duration       = dot.baseDuration,
+    }
+end
+
+-- Clear DoT state when there's no valid target (a new target's DoTs are unknown
+-- until we see the player recast them).
+local function RefreshDots()
+    if not (UnitExists("target") and not UnitIsDeadOrGhost("target")) then
+        ClearDots()
     end
 end
 
@@ -467,7 +468,8 @@ ev:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
 ev:RegisterEvent("ACTIVE_TALENT_GROUP_CHANGED")
 ev:RegisterEvent("UNIT_AURA")
 ev:RegisterEvent("UNIT_POWER_UPDATE")
-ev:RegisterEvent("UNIT_TARGET")
+ev:RegisterEvent("PLAYER_TARGET_CHANGED")
+ev:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED")
 
 -- Minimap button — left-click toggles the HUD, right-click locks/unlocks, drag repositions.
 local MM_RADIUS = 80
@@ -530,7 +532,7 @@ local function BuildMinimapButton()
     ET.minimapBtn = btn
 end
 
-ev:SetScript("OnEvent", function(_, event, arg1)
+ev:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
     if event == "ADDON_LOADED" and arg1 == ADDON then
         if not EclipseTunnellerDB then
             EclipseTunnellerDB = CopyTable(DEFAULTS)
@@ -564,16 +566,18 @@ ev:SetScript("OnEvent", function(_, event, arg1)
         if arg1 == "player" then
             st.eclipse = GetEclipseState()
             if ET.frame then UpdateEclipse(); UpdateSuggest() end
-        elseif arg1 == "target" then
-            RefreshDots()
-            if ET.frame then UpdateDots(); UpdateSuggest() end
         end
 
     elseif event == "UNIT_POWER_UPDATE" and arg1 == "player" then
         if ET.frame then UpdateAP() end
 
-    elseif event == "UNIT_TARGET" and arg1 == "player" then
-        RefreshDots()
+    elseif event == "PLAYER_TARGET_CHANGED" then
+        ClearDots()        -- new target: DoT state unknown until recast
+        RefreshDots()      -- (also clears if there's no valid target)
+        if ET.frame then UpdateDots(); UpdateSuggest() end
+
+    elseif event == "UNIT_SPELLCAST_SUCCEEDED" and arg1 == "player" then
+        RecordDotCast(arg3)   -- arg3 = spellID (non-secret for the player unit)
         if ET.frame then UpdateDots(); UpdateSuggest() end
     end
 end)
