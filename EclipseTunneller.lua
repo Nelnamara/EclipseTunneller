@@ -109,10 +109,21 @@ local function ScanDebuffs(unit, filter, fn)
     end
 end
 
-local ECLIPSE_CASTS = {
-    [ECLIPSE_SOLAR_CAST] = "SOLAR",
-    [ECLIPSE_LUNAR_CAST] = "LUNAR",
-}
+-- Eclipse activations matched by NAME, not ID: hero specs vary (some remove Solar
+-- Eclipse) and Midnight uses override spell IDs, but the "Solar Eclipse" / "Lunar
+-- Eclipse" names are stable. On a spec without Solar you just never cast it, so the
+-- HUD shows only the Eclipse(s) you have. Map built at login (enUS literals + the
+-- known IDs' localized names).
+local ECLIPSE_STATE_BY_NAME = {}
+local function BuildEclipseNameMap()
+    wipe(ECLIPSE_STATE_BY_NAME)
+    ECLIPSE_STATE_BY_NAME["Solar Eclipse"] = "SOLAR"
+    ECLIPSE_STATE_BY_NAME["Lunar Eclipse"] = "LUNAR"
+    for id, state in pairs({ [ECLIPSE_SOLAR_CAST] = "SOLAR", [ECLIPSE_LUNAR_CAST] = "LUNAR" }) do
+        local info = C_Spell and C_Spell.GetSpellInfo and C_Spell.GetSpellInfo(id)
+        if info and info.name then ECLIPSE_STATE_BY_NAME[info.name] = state end
+    end
+end
 
 -- Returns the current Eclipse while its 15s window is open, else "NONE".
 local function GetEclipseState()
@@ -122,9 +133,10 @@ local function GetEclipseState()
     return "NONE"
 end
 
--- Opens the Eclipse window when the player presses the Solar/Lunar Eclipse activation.
+-- Opens the Eclipse window when the player casts a Solar/Lunar Eclipse activation.
 local function RecordEclipseCast(spellID)
-    local state = ECLIPSE_CASTS[spellID]
+    local info  = C_Spell and C_Spell.GetSpellInfo and C_Spell.GetSpellInfo(spellID)
+    local state = info and info.name and ECLIPSE_STATE_BY_NAME[info.name]
     if not state then return false end
     st.eclipse       = state
     st.eclipseExpiry = GetTime() + ECLIPSE_WINDOW
@@ -572,6 +584,7 @@ ev:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
     elseif event == "PLAYER_LOGIN" or event == "PLAYER_ENTERING_WORLD" then
         CheckSpec()
         BuildDotNameMap()
+        BuildEclipseNameMap()
         if not ET.frame then BuildUI() end
         if st.isBalance then StartTicker() end
         FullUpdate()
