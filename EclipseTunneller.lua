@@ -12,14 +12,15 @@ local ET = EclipseTunneller
 
 local ASTRAL_POWER_TYPE = 8
 
--- Eclipse buff IDs. Midnight 12.0.7 reworked Eclipse into an activated 15s buff
--- window: cast Wrath -> "Solar Eclipse" becomes available, Starfire -> "Lunar
--- Eclipse"; pressing it grants the matching self-buff. 1233346 = Solar Eclipse,
--- 1233272 = Lunar Eclipse (confirmed: they appear as the activation casts in
--- /cdc verbose, and Wowhead lists both as Buffs). The old 48517/48518 (Legion) and
--- 164547/164812 IDs are NOT used on 12.0.7 — they made the HUD show "NO ECLIPSE".
-local AURA_SOLAR = 1233346
-local AURA_LUNAR = 1233272
+-- Eclipse is tracked EVENT-DRIVEN — the buff aura isn't reliably readable on Midnight
+-- (GetPlayerAuraBySpellID never matched, and aura.spellId is secret). Midnight 12.0.7
+-- reworked Eclipse into an activated 15s window: cast Wrath -> "Solar Eclipse" becomes
+-- available, Starfire -> "Lunar Eclipse"; we detect the ACTIVATION cast (these IDs show
+-- up in /cdc verbose) and open a 15s window. Old 48517/48518 (Legion) / 164547/164812
+-- are not used on 12.0.7 (they left the HUD stuck on "NO ECLIPSE").
+local ECLIPSE_SOLAR_CAST = 1233346
+local ECLIPSE_LUNAR_CAST = 1233272
+local ECLIPSE_WINDOW     = 15   -- seconds the Eclipse buff lasts after activation
 
 -- DoTs tracked on target
 -- baseDuration: approximate base (un-hasted) seconds; used as fallback
@@ -74,11 +75,12 @@ local DEFAULTS = {
 -------------------------------------------------------------------------------
 
 local st = {
-    eclipse   = "NONE",
-    isBalance = false,
-    inCombat  = false,
-    dots      = {},  -- [spellID] = { computedExpiry, duration }
-    cdReady   = {},  -- [spellID] = bool (isActive flag, not a secret value)
+    eclipse       = "NONE",
+    eclipseExpiry = 0,    -- GetTime() the current Eclipse window ends
+    isBalance     = false,
+    inCombat      = false,
+    dots          = {},  -- [spellID] = { computedExpiry, duration }
+    cdReady       = {},  -- [spellID] = bool (isActive flag, not a secret value)
 }
 
 -------------------------------------------------------------------------------
@@ -107,16 +109,26 @@ local function ScanDebuffs(unit, filter, fn)
     end
 end
 
+local ECLIPSE_CASTS = {
+    [ECLIPSE_SOLAR_CAST] = "SOLAR",
+    [ECLIPSE_LUNAR_CAST] = "LUNAR",
+}
+
+-- Returns the current Eclipse while its 15s window is open, else "NONE".
 local function GetEclipseState()
-    -- C_UnitAuras.GetPlayerAuraBySpellID does the spellID match internally
-    -- and returns nil/non-nil without exposing the secret spellId field for
-    -- us to compare directly (direct comparison taints and errors).
-    local solar = C_UnitAuras.GetPlayerAuraBySpellID(AURA_SOLAR) ~= nil
-    local lunar = C_UnitAuras.GetPlayerAuraBySpellID(AURA_LUNAR) ~= nil
-    if solar and lunar then return "BOTH"
-    elseif solar       then return "SOLAR"
-    elseif lunar       then return "LUNAR"
-    else                    return "NONE" end
+    if st.eclipseExpiry and GetTime() < st.eclipseExpiry then
+        return st.eclipse
+    end
+    return "NONE"
+end
+
+-- Opens the Eclipse window when the player presses the Solar/Lunar Eclipse activation.
+local function RecordEclipseCast(spellID)
+    local state = ECLIPSE_CASTS[spellID]
+    if not state then return false end
+    st.eclipse       = state
+    st.eclipseExpiry = GetTime() + ECLIPSE_WINDOW
+    return true
 end
 
 -- DoT tracking is event-driven on Midnight. Target-debuff scanning is blocked:
@@ -593,7 +605,8 @@ ev:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
         if ET.frame then UpdateDots(); UpdateSuggest() end
 
     elseif event == "UNIT_SPELLCAST_SUCCEEDED" and arg1 == "player" then
-        RecordDotCast(arg3)   -- arg3 = spellID (non-secret for the player unit)
+        RecordDotCast(arg3)        -- arg3 = spellID (non-secret for the player unit)
+        if RecordEclipseCast(arg3) and ET.frame then UpdateEclipse() end
         if ET.frame then UpdateDots(); UpdateSuggest() end
     end
 end)
