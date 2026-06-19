@@ -22,17 +22,10 @@ Built from the ground up for Midnight's secret-value API restrictions. No arithm
 
 ---
 
-## Slash Commands
+## Requirements
 
-| Command | Description |
-|---|---|
-| `/et` | Toggle out-of-combat visibility |
-| `/et lock` | Lock frame position |
-| `/et unlock` | Unlock frame (drag to move) |
-| `/et combat` | Toggle out-of-combat display |
-| `/et stellar` | Toggle Stellar Flare DoT row |
-| `/et reset` | Reset frame position to default |
-| `/et debug` | Print current Eclipse state and DoT timers to chat |
+- WoW Midnight 12.0.7+
+- No library dependencies
 
 ---
 
@@ -45,7 +38,20 @@ Built from the ground up for Midnight's secret-value API restrictions. No arithm
 
 ---
 
-## Midnight Compatibility Notes
+## Usage
+
+### Slash Commands
+
+- **`/et`** — Toggle out-of-combat visibility
+- **`/et lock`** / **`/et unlock`** — Lock/unlock the frame (drag to move)
+- **`/et combat`** — Toggle out-of-combat display
+- **`/et stellar`** — Toggle the Stellar Flare DoT row
+- **`/et reset`** — Reset frame position to default
+- **`/et debug`** — Print current Eclipse state and DoT timers to chat
+
+---
+
+## Compatibility / Midnight Notes
 
 WoW Midnight introduced secret-value restrictions on many API return values. EclipseTunneller is fully compliant:
 
@@ -82,10 +88,26 @@ WoW Midnight introduced secret-value restrictions on many API return values. Ecl
 
 ## Roadmap
 
-- [ ] **Major-cooldown active display** — surface "majors active" with a timer in the larger readout space
-- [ ] **Per-hero-spec suggestions** — tailor the cast hint to the active hero tree (e.g. specs that drop Solar Eclipse)
-- [ ] **Haste-scaled DoT timers** — refine the event-driven durations once haste is readable safely
-- [ ] **Configurable cooldown row** — choose which majors appear
+<details>
+<summary>Planned</summary>
+
+- **Major-cooldown active display** — surface "majors active" with a timer in the larger readout space
+- **Per-hero-spec suggestions** — tailor the cast hint to the active hero tree (e.g. specs that drop Solar Eclipse)
+- **Haste-scaled DoT timers** — refine the event-driven durations once haste is readable safely
+- **Configurable cooldown row** — choose which majors appear
+
+</details>
+
+---
+
+## Feature Requests
+
+<details>
+<summary>How to request</summary>
+
+Open an issue on [GitHub](https://github.com/Nelnamara/EclipseTunneller/issues) or leave a CurseForge comment.
+
+</details>
 
 ---
 
