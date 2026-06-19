@@ -114,18 +114,30 @@ end
 -- Eclipse" names are stable. On a spec without Solar you just never cast it, so the
 -- HUD shows only the Eclipse(s) you have. Map built at login (enUS literals + the
 -- known IDs' localized names).
-local ECLIPSE_STATE_BY_NAME = {}
+-- Activations that set an Eclipse state, matched by NAME with each one's window
+-- duration. Celestial Alignment (15s) and Incarnation: Chosen of Elune (20s) grant
+-- the "both Eclipses" CELESTIAL state. (Greater Alignment extends 40% — not detected,
+-- so timers are approximate.) Map built at login: enUS literals + localized names.
+local ECLIPSE_ACTIVATIONS = {}   -- [spellName] = { state, duration }
 local function BuildEclipseNameMap()
-    wipe(ECLIPSE_STATE_BY_NAME)
-    ECLIPSE_STATE_BY_NAME["Solar Eclipse"] = "SOLAR"
-    ECLIPSE_STATE_BY_NAME["Lunar Eclipse"] = "LUNAR"
-    for id, state in pairs({ [ECLIPSE_SOLAR_CAST] = "SOLAR", [ECLIPSE_LUNAR_CAST] = "LUNAR" }) do
+    wipe(ECLIPSE_ACTIVATIONS)
+    ECLIPSE_ACTIVATIONS["Solar Eclipse"]                = { "SOLAR", ECLIPSE_WINDOW }
+    ECLIPSE_ACTIVATIONS["Lunar Eclipse"]                = { "LUNAR", ECLIPSE_WINDOW }
+    ECLIPSE_ACTIVATIONS["Celestial Alignment"]          = { "BOTH",  15 }
+    ECLIPSE_ACTIVATIONS["Incarnation: Chosen of Elune"] = { "BOTH",  20 }
+    local byID = {
+        [ECLIPSE_SOLAR_CAST] = { "SOLAR", ECLIPSE_WINDOW },
+        [ECLIPSE_LUNAR_CAST] = { "LUNAR", ECLIPSE_WINDOW },
+        [194223]             = { "BOTH",  15 },   -- Celestial Alignment
+        [102560]             = { "BOTH",  20 },   -- Incarnation: Chosen of Elune
+    }
+    for id, def in pairs(byID) do
         local info = C_Spell and C_Spell.GetSpellInfo and C_Spell.GetSpellInfo(id)
-        if info and info.name then ECLIPSE_STATE_BY_NAME[info.name] = state end
+        if info and info.name then ECLIPSE_ACTIVATIONS[info.name] = def end
     end
 end
 
--- Returns the current Eclipse while its 15s window is open, else "NONE".
+-- Returns the current Eclipse while its window is open, else "NONE".
 local function GetEclipseState()
     if st.eclipseExpiry and GetTime() < st.eclipseExpiry then
         return st.eclipse
@@ -133,13 +145,13 @@ local function GetEclipseState()
     return "NONE"
 end
 
--- Opens the Eclipse window when the player casts a Solar/Lunar Eclipse activation.
+-- Opens the Eclipse window when the player casts an Eclipse / CA / Incarnation.
 local function RecordEclipseCast(spellID)
-    local info  = C_Spell and C_Spell.GetSpellInfo and C_Spell.GetSpellInfo(spellID)
-    local state = info and info.name and ECLIPSE_STATE_BY_NAME[info.name]
-    if not state then return false end
-    st.eclipse       = state
-    st.eclipseExpiry = GetTime() + ECLIPSE_WINDOW
+    local info = C_Spell and C_Spell.GetSpellInfo and C_Spell.GetSpellInfo(spellID)
+    local def  = info and info.name and ECLIPSE_ACTIVATIONS[info.name]
+    if not def then return false end
+    st.eclipse       = def[1]
+    st.eclipseExpiry = GetTime() + def[2]
     return true
 end
 
@@ -376,8 +388,13 @@ local ECLIPSE_COLOR = {
 }
 
 local function UpdateEclipse()
-    local e = st.eclipse
-    ET.frame.eclipseLabel:SetText(ECLIPSE_TEXT[e] or "NO ECLIPSE")
+    local e = GetEclipseState()
+    local txt = ECLIPSE_TEXT[e] or "NO ECLIPSE"
+    if e ~= "NONE" and st.eclipseExpiry then
+        local rem = st.eclipseExpiry - GetTime()   -- normal numbers, never secret
+        if rem > 0 then txt = string.format("%s  %.0fs", txt, rem) end
+    end
+    ET.frame.eclipseLabel:SetText(txt)
     local c = ECLIPSE_COLOR[e] or ECLIPSE_COLOR.NONE
     ET.frame.eclipseLabel:SetTextColor(c[1], c[2], c[3], 1)
 end

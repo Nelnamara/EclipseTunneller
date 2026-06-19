@@ -3,7 +3,7 @@
 ## Notes: Balance Druid Eclipse HUD - tracks Eclipse state, DoT timers, and cast windows.
 ## IconTexture: Interface\AddOns\EclipseTunneller\Media\icon.png
 ## Author: Nelnamara
-## Version: 1.0.3
+## Version: 1.0.4
 ## SavedVariables: EclipseTunnellerDB
 ## X-Curse-Project-ID: 1577103
 ## X-Website: https://github.com/Nelnamara/EclipseTunneller
