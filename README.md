@@ -59,7 +59,7 @@ WoW Midnight introduced secret-value restrictions on many API return values. Ecl
 
 ## Changelog
 
-### v1.0.4 (in testing)
+### v1.0.4
 - Celestial Alignment (15s) and Incarnation: Chosen of Elune (20s) now register as CELESTIAL — both eclipses active — with the window timer shown in the readout
 
 ### v1.0.3

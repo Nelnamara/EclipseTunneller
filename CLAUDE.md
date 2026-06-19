@@ -20,7 +20,7 @@ Auto-shows in combat (or always, if `showOutOfCombat`).
 ## Build / release / deploy
 - BigWigs packager on **`v*` tag push**. CurseForge secret: **`CURSFORGE_API_KEY`** (misspelled, leave as-is).
 - Local test: copy to `D:\World of Warcraft\_retail_\Interface\AddOns\EclipseTunneller\`.
-- Current version: **1.0.3** (Interface 120007) — pending tag (Eclipse-aura + DoT-crash fixes).
+- Current version: **1.0.4** (Interface 120007) — released to CurseForge (tag `v1.0.4`). 1.0.3 shipped the Eclipse-aura + DoT-crash rework; 1.0.4 added CA/Incarnation → CELESTIAL with a window timer.
 
 ## Conventions
 - **Never** append a `Co-Authored-By` trailer to commits.
