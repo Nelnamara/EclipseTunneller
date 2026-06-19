@@ -126,15 +126,30 @@ end
 -- a DoT (UNIT_SPELLCAST_SUCCEEDED — spellID is non-secret for the "player" unit) and
 -- clear on target change. baseDuration is approximate (no haste) but always a normal
 -- number, never a secret API value.
-local DOT_BY_ID = {}
-for _, dot in ipairs(DOTS) do DOT_BY_ID[dot.id] = dot end
+-- Match DoT casts by canonical spell NAME, not ID. Midnight reports the player's
+-- actual casts with OVERRIDE spell IDs (Moonfire fires as 1269918, not 8921; Sunfire
+-- likewise), and those shift between patches — but the spell *name* from GetSpellInfo
+-- is stable and non-secret. Built after login (spell data must be loaded). DOT_CAST_NAME
+-- seeds the enUS name; GetSpellInfo adds the locale-correct one.
+local DOT_CAST_NAME = { [8921] = "Moonfire", [93402] = "Sunfire", [202347] = "Stellar Flare" }
+local DOT_BY_NAME = {}
+local function BuildDotNameMap()
+    wipe(DOT_BY_NAME)
+    for _, dot in ipairs(DOTS) do
+        local canon = DOT_CAST_NAME[dot.id]
+        if canon then DOT_BY_NAME[canon] = dot end
+        local info = C_Spell and C_Spell.GetSpellInfo and C_Spell.GetSpellInfo(dot.id)
+        if info and info.name then DOT_BY_NAME[info.name] = dot end
+    end
+end
 
 local function ClearDots()
     for id in pairs(st.dots) do st.dots[id] = nil end
 end
 
 local function RecordDotCast(spellID)
-    local dot = DOT_BY_ID[spellID]
+    local info = C_Spell and C_Spell.GetSpellInfo and C_Spell.GetSpellInfo(spellID)
+    local dot = info and info.name and DOT_BY_NAME[info.name]
     if not dot then return end
     st.dots[dot.id] = {
         computedExpiry = GetTime() + dot.baseDuration,
@@ -544,6 +559,7 @@ ev:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
 
     elseif event == "PLAYER_LOGIN" or event == "PLAYER_ENTERING_WORLD" then
         CheckSpec()
+        BuildDotNameMap()
         if not ET.frame then BuildUI() end
         if st.isBalance then StartTicker() end
         FullUpdate()
